@@ -1,6 +1,6 @@
 from http.server import BaseHTTPRequestHandler
 from youtube_transcript_api import YouTubeTranscriptApi
-from pytube import YouTube
+import yt_dlp
 import json
 import re
 import html
@@ -174,38 +174,52 @@ class handler(BaseHTTPRequestHandler):
     def handle_get_video_streams(self, body):
         url = body.get('url', '')
 
-        yt = YouTube(url)
-        title = yt.title
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+        title = info.get('title', '')
+        thumbnail = info.get('thumbnail', '')
+        duration = info.get('duration', 0)
 
         streams = []
 
-        # 동영상+오디오 스트림 (progressive)
-        for stream in yt.streams.filter(progressive=True).order_by('resolution').desc():
-            streams.append({
-                'itag': stream.itag,
-                'type': 'video',
-                'quality': stream.resolution,
-                'mime_type': stream.mime_type,
-                'filesize': stream.filesize,
-                'filesize_mb': round(stream.filesize / (1024 * 1024), 2) if stream.filesize else None,
-                'url': stream.url
-            })
+        for fmt in info.get('formats', []):
+            # 동영상+오디오 스트림
+            if fmt.get('vcodec') != 'none' and fmt.get('acodec') != 'none':
+                filesize = fmt.get('filesize') or fmt.get('filesize_approx')
+                streams.append({
+                    'format_id': fmt.get('format_id'),
+                    'type': 'video',
+                    'quality': fmt.get('resolution') or f"{fmt.get('height', '?')}p",
+                    'ext': fmt.get('ext'),
+                    'filesize': filesize,
+                    'filesize_mb': round(filesize / (1024 * 1024), 2) if filesize else None,
+                    'url': fmt.get('url')
+                })
 
         # 오디오 전용 스트림
-        for stream in yt.streams.filter(only_audio=True).order_by('abr').desc():
-            streams.append({
-                'itag': stream.itag,
-                'type': 'audio',
-                'quality': stream.abr,
-                'mime_type': stream.mime_type,
-                'filesize': stream.filesize,
-                'filesize_mb': round(stream.filesize / (1024 * 1024), 2) if stream.filesize else None,
-                'url': stream.url
-            })
+        for fmt in info.get('formats', []):
+            if fmt.get('vcodec') == 'none' and fmt.get('acodec') != 'none':
+                filesize = fmt.get('filesize') or fmt.get('filesize_approx')
+                streams.append({
+                    'format_id': fmt.get('format_id'),
+                    'type': 'audio',
+                    'quality': f"{fmt.get('abr', '?')}kbps",
+                    'ext': fmt.get('ext'),
+                    'filesize': filesize,
+                    'filesize_mb': round(filesize / (1024 * 1024), 2) if filesize else None,
+                    'url': fmt.get('url')
+                })
 
         self.send_json_response({
             "title": title,
-            "thumbnail": yt.thumbnail_url,
-            "duration": yt.length,
+            "thumbnail": thumbnail,
+            "duration": duration,
             "streams": streams
         })
