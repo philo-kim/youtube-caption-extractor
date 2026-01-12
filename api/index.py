@@ -40,6 +40,17 @@ class handler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
 
+    def do_GET(self):
+        self.send_json_response({
+            "status": "ok",
+            "message": "YouTube Caption Extractor API",
+            "endpoints": [
+                "POST /api/extract-info",
+                "POST /api/download-caption",
+                "POST /api/preview-caption"
+            ]
+        })
+
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_cors_headers()
