@@ -1,6 +1,4 @@
-"""
-Vercel Python Serverless Function for YouTube Caption Extraction
-"""
+from http.server import BaseHTTPRequestHandler
 import json
 import re
 import io
@@ -33,140 +31,123 @@ def get_video_title(video_id: str) -> str:
         pass
     return f"YouTube_Video_{video_id}"
 
-def extract_info_handler(body, headers):
-    url = body.get('url', '')
-    video_id = get_video_id(url)
-    title = get_video_title(video_id)
+class handler(BaseHTTPRequestHandler):
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
     
-    api = YouTubeTranscriptApi()
-    transcript_list = api.list(video_id)
+    def do_POST(self):
+        try:
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            body = json.loads(post_data.decode('utf-8'))
+            
+            path = self.path
+            
+            if '/extract-info' in path:
+                self.handle_extract_info(body)
+            elif '/download-caption' in path:
+                self.handle_download_caption(body)
+            elif '/preview-caption' in path:
+                self.handle_preview(body)
+            else:
+                self.send_error(404, "Not found")
+        except Exception as e:
+            self.send_error(500, str(e))
     
-    tracks = []
-    for t in transcript_list:
-        tracks.append({
-            'languageCode': t.language_code,
-            'name': t.language,
-            'kind': 'asr' if t.is_generated else ''
-        })
+    def handle_extract_info(self, body):
+        url = body.get('url', '')
+        video_id = get_video_id(url)
+        title = get_video_title(video_id)
+        
+        api = YouTubeTranscriptApi()
+        transcript_list = api.list(video_id)
+        
+        tracks = []
+        for t in transcript_list:
+            tracks.append({
+                'languageCode': t.language_code,
+                'name': t.language,
+                'kind': 'asr' if t.is_generated else ''
+            })
+        
+        response = {"title": title, "available_captions": tracks}
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        self.wfile.write(json.dumps(response).encode())
     
-    return {
-        'statusCode': 200,
-        'headers': headers,
-        'body': json.dumps({"title": title, "available_captions": tracks})
-    }
-
-def download_caption_handler(body, headers):
-    url = body.get('url', '')
-    language_code = body.get('language_code')
-    format_type = body.get('format', 'srt')
+    def handle_download_caption(self, body):
+        url = body.get('url', '')
+        language_code = body.get('language_code')
+        format_type = body.get('format', 'srt')
+        
+        video_id = get_video_id(url)
+        title = get_video_title(video_id)
+        
+        api = YouTubeTranscriptApi()
+        transcript_list = api.list(video_id)
+        transcript = transcript_list.find_transcript([language_code])
+        data = transcript.fetch()
+        
+        output = io.StringIO()
+        if format_type == "srt":
+            for i, item in enumerate(data):
+                start = item.start
+                end = start + item.duration
+                output.write(f"{i+1}\n{format_time(start)} --> {format_time(end)}\n{item.text}\n\n")
+            content = output.getvalue()
+            content_type = 'application/x-subrip'
+            filename = "subtitle.srt"
+        elif format_type == "vtt":
+            output.write("WEBVTT\n\n")
+            for item in data:
+                start = item.start
+                end = start + item.duration
+                output.write(f"{format_time(start, True)} --> {format_time(end, True)}\n{item.text}\n\n")
+            content = output.getvalue()
+            content_type = 'text/vtt'
+            filename = "subtitle.vtt"
+        else:
+            for item in data:
+                output.write(f"{item.text}\n")
+            content = output.getvalue()
+            content_type = 'text/plain'
+            filename = "subtitle.txt"
+        
+        self.send_response(200)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        self.wfile.write(content.encode('utf-8'))
     
-    video_id = get_video_id(url)
-    title = get_video_title(video_id)
-    
-    api = YouTubeTranscriptApi()
-    transcript_list = api.list(video_id)
-    transcript = transcript_list.find_transcript([language_code])
-    data = transcript.fetch()
-    
-    # 포맷 변환
-    output = io.StringIO()
-    if format_type == "srt":
-        for i, item in enumerate(data):
-            start = item.start
-            end = start + item.duration
-            output.write(f"{i+1}\n{format_time(start)} --> {format_time(end)}\n{item.text}\n\n")
-        content = output.getvalue()
-        headers['Content-Type'] = 'application/x-subrip'
-        headers['Content-Disposition'] = f'attachment; filename="subtitle.srt"'
-    elif format_type == "vtt":
-        output.write("WEBVTT\n\n")
-        for item in data:
-            start = item.start
-            end = start + item.duration
-            output.write(f"{format_time(start, True)} --> {format_time(end, True)}\n{item.text}\n\n")
-        content = output.getvalue()
-        headers['Content-Type'] = 'text/vtt'
-        headers['Content-Disposition'] = f'attachment; filename="subtitle.vtt"'
-    else: # txt
-        for item in data:
-            output.write(f"{item.text}\n")
-        content = output.getvalue()
-        headers['Content-Type'] = 'text/plain'
-        headers['Content-Disposition'] = f'attachment; filename="subtitle.txt"'
-    
-    return {
-        'statusCode': 200,
-        'headers': headers,
-        'body': content
-    }
-
-def preview_handler(body, headers):
-    url = body.get('url', '')
-    language_code = body.get('language_code')
-    
-    video_id = get_video_id(url)
-    title = get_video_title(video_id)
-    
-    api = YouTubeTranscriptApi()
-    transcript_list = api.list(video_id)
-    transcript = transcript_list.find_transcript([language_code])
-    data = transcript.fetch()[:10]
-    
-    preview_data = [{"time": format_time(item.start), "text": item.text} for item in data]
-    
-    return {
-        'statusCode': 200,
-        'headers': headers,
-        'body': json.dumps({
+    def handle_preview(self, body):
+        url = body.get('url', '')
+        language_code = body.get('language_code')
+        
+        video_id = get_video_id(url)
+        title = get_video_title(video_id)
+        
+        api = YouTubeTranscriptApi()
+        transcript_list = api.list(video_id)
+        transcript = transcript_list.find_transcript([language_code])
+        data = transcript.fetch()[:10]
+        
+        preview_data = [{"time": format_time(item.start), "text": item.text} for item in data]
+        
+        response = {
             "video_title": title,
             "language": transcript.language,
             "preview": preview_data
-        })
-    }
-
-def handler(event, context):
-    """Vercel 서버리스 함수 핸들러"""
-    # CORS 헤더
-    headers = {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type'
-    }
-    
-    # 요청 경로 파싱
-    path = event.get('path', '')
-    method = event.get('httpMethod', 'POST')
-    body = event.get('body', '{}')
-    
-    if isinstance(body, str):
-        body = json.loads(body)
-    
-    # OPTIONS 요청 처리 (CORS preflight)
-    if method == 'OPTIONS':
-        return {
-            'statusCode': 200,
-            'headers': headers,
-            'body': ''
         }
-    
-    try:
-        # 경로에 따라 엔드포인트 분기
-        if '/extract-info' in path:
-            return extract_info_handler(body, headers)
-        elif '/download-caption' in path:
-            return download_caption_handler(body, headers)
-        elif '/preview-caption' in path:
-            return preview_handler(body, headers)
-        else:
-            return {
-                'statusCode': 404,
-                'headers': headers,
-                'body': json.dumps({'detail': 'Not found'})
-            }
-    except Exception as e:
-        return {
-            'statusCode': 500,
-            'headers': headers,
-            'body': json.dumps({'detail': str(e)})
-        }
+        
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        self.wfile.write(json.dumps(response).encode())
