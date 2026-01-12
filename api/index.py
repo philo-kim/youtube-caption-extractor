@@ -1,32 +1,12 @@
 """
-YouTube 자막 추출기 백엔드 API - 검증된 라이브러리 버전
+Vercel Python Serverless Function for YouTube Caption Extraction
 """
+import json
 import re
 import io
 import html
-from typing import List, Dict, Optional
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, HttpUrl
 from youtube_transcript_api import YouTubeTranscriptApi
 import requests
-import json
-
-app = FastAPI(title="YouTube 자막 추출기", version="1.4.0")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-class ExtractRequest(BaseModel):
-    url: HttpUrl
-    language_code: Optional[str] = None
-    format: str = "srt"
 
 def format_time(seconds: float, is_vtt: bool = False) -> str:
     h = int(seconds // 3600)
@@ -40,11 +20,10 @@ def format_time(seconds: float, is_vtt: bool = False) -> str:
 def get_video_id(url: str) -> str:
     match = re.search(r'(?:v=|\/|be\/|embed\/)([a-zA-Z0-9_-]{11})', str(url))
     if not match:
-        raise HTTPException(status_code=400, detail="유효한 YouTube URL이 아닙니다.")
+        raise ValueError("유효한 YouTube URL이 아닙니다.")
     return match.group(1)
 
 def get_video_title(video_id: str) -> str:
-    """비디오 제목을 가져오기 위한 최소한의 요청"""
     try:
         res = requests.get(f"https://www.youtube.com/watch?v={video_id}", timeout=10)
         match = re.search(r'<title>(.*?) - YouTube</title>', res.text)
@@ -54,108 +33,140 @@ def get_video_title(video_id: str) -> str:
         pass
     return f"YouTube_Video_{video_id}"
 
-@app.post("/extract-info")
-async def extract_info(request: ExtractRequest):
-    video_id = get_video_id(request.url)
+def extract_info_handler(body, headers):
+    url = body.get('url', '')
+    video_id = get_video_id(url)
     title = get_video_title(video_id)
     
-    try:
-        api = YouTubeTranscriptApi()
-        transcript_list = api.list(video_id)
-        
-        tracks = []
-        # 수동 생성 및 자동 생성 자막 목록 추출
-        for t in transcript_list:
-            tracks.append({
-                'languageCode': t.language_code,
-                'name': t.language,
-                'kind': 'asr' if t.is_generated else ''
-            })
-            
-        return {"title": title, "available_captions": tracks}
-    except Exception as e:
-        print(f"Error in extract-info: {e}")
-        raise HTTPException(status_code=404, detail="자막을 찾을 수 없거나 추출이 제한된 영상입니다.")
+    api = YouTubeTranscriptApi()
+    transcript_list = api.list(video_id)
+    
+    tracks = []
+    for t in transcript_list:
+        tracks.append({
+            'languageCode': t.language_code,
+            'name': t.language,
+            'kind': 'asr' if t.is_generated else ''
+        })
+    
+    return {
+        'statusCode': 200,
+        'headers': headers,
+        'body': json.dumps({"title": title, "available_captions": tracks})
+    }
 
-@app.post("/download-caption")
-async def download_caption(request: ExtractRequest):
-    video_id = get_video_id(request.url)
+def download_caption_handler(body, headers):
+    url = body.get('url', '')
+    language_code = body.get('language_code')
+    format_type = body.get('format', 'srt')
+    
+    video_id = get_video_id(url)
     title = get_video_title(video_id)
     
-    if not request.language_code:
-        raise HTTPException(status_code=400, detail="언어 코드를 지정해야 합니다.")
+    api = YouTubeTranscriptApi()
+    transcript_list = api.list(video_id)
+    transcript = transcript_list.find_transcript([language_code])
+    data = transcript.fetch()
+    
+    # 포맷 변환
+    output = io.StringIO()
+    if format_type == "srt":
+        for i, item in enumerate(data):
+            start = item.start
+            end = start + item.duration
+            output.write(f"{i+1}\n{format_time(start)} --> {format_time(end)}\n{item.text}\n\n")
+        content = output.getvalue()
+        headers['Content-Type'] = 'application/x-subrip'
+        headers['Content-Disposition'] = f'attachment; filename="subtitle.srt"'
+    elif format_type == "vtt":
+        output.write("WEBVTT\n\n")
+        for item in data:
+            start = item.start
+            end = start + item.duration
+            output.write(f"{format_time(start, True)} --> {format_time(end, True)}\n{item.text}\n\n")
+        content = output.getvalue()
+        headers['Content-Type'] = 'text/vtt'
+        headers['Content-Disposition'] = f'attachment; filename="subtitle.vtt"'
+    else: # txt
+        for item in data:
+            output.write(f"{item.text}\n")
+        content = output.getvalue()
+        headers['Content-Type'] = 'text/plain'
+        headers['Content-Disposition'] = f'attachment; filename="subtitle.txt"'
+    
+    return {
+        'statusCode': 200,
+        'headers': headers,
+        'body': content
+    }
 
-    try:
-        api = YouTubeTranscriptApi()
-        transcript_list = api.list(video_id)
-        
-        # 요청된 언어 찾기 (자동생성 여부 상관없이 매칭되는 첫 번째 언어)
-        try:
-            transcript = transcript_list.find_transcript([request.language_code])
-        except:
-            # 해당 언어가 없으면 수동/자동 구분 없이 시도
-            transcript = next((t for t in transcript_list if t.language_code == request.language_code), None)
-            if not transcript:
-                raise Exception("해당 언어의 자막을 찾을 수 없습니다.")
-
-        data = transcript.fetch()
-        
-        # 포맷 변환
-        output = io.StringIO()
-        if request.format == "srt":
-            for i, item in enumerate(data):
-                start = item.start
-                end = start + item.duration
-                output.write(f"{i+1}\n{format_time(start)} --> {format_time(end)}\n{item.text}\n\n")
-            ext, mime = "srt", "application/x-subrip"
-        elif request.format == "vtt":
-            output.write("WEBVTT\n\n")
-            for item in data:
-                start = item.start
-                end = start + item.duration
-                output.write(f"{format_time(start, True)} --> {format_time(end, True)}\n{item.text}\n\n")
-            ext, mime = "vtt", "text/vtt"
-        else: # txt
-            for item in data:
-                output.write(f"{item.text}\n")
-            ext, mime = "txt", "text/plain"
-
-        output.seek(0)
-        safe_title = re.sub(r'[^\w\s.-]', '', title).replace(' ', '_')
-        filename = f"{safe_title}_{request.language_code}.{ext}"
-
-        return StreamingResponse(
-            output,
-            media_type=mime,
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
-        )
-    except Exception as e:
-        print(f"Error in download-caption: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/preview-caption")
-async def preview(request: ExtractRequest):
-    video_id = get_video_id(request.url)
+def preview_handler(body, headers):
+    url = body.get('url', '')
+    language_code = body.get('language_code')
+    
+    video_id = get_video_id(url)
     title = get_video_title(video_id)
     
-    try:
-        api = YouTubeTranscriptApi()
-        transcript_list = api.list(video_id)
-        transcript = transcript_list.find_transcript([request.language_code])
-        data = transcript.fetch()[:10] # 상위 10개
-        
-        return {
+    api = YouTubeTranscriptApi()
+    transcript_list = api.list(video_id)
+    transcript = transcript_list.find_transcript([language_code])
+    data = transcript.fetch()[:10]
+    
+    preview_data = [{"time": format_time(item.start), "text": item.text} for item in data]
+    
+    return {
+        'statusCode': 200,
+        'headers': headers,
+        'body': json.dumps({
             "video_title": title,
             "language": transcript.language,
-            "preview": [{"time": format_time(item.start), "text": item.text} for item in data]
+            "preview": preview_data
+        })
+    }
+
+def handler(event, context):
+    """Vercel 서버리스 함수 핸들러"""
+    # CORS 헤더
+    headers = {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type'
+    }
+    
+    # 요청 경로 파싱
+    path = event.get('path', '')
+    method = event.get('httpMethod', 'POST')
+    body = event.get('body', '{}')
+    
+    if isinstance(body, str):
+        body = json.loads(body)
+    
+    # OPTIONS 요청 처리 (CORS preflight)
+    if method == 'OPTIONS':
+        return {
+            'statusCode': 200,
+            'headers': headers,
+            'body': ''
         }
+    
+    try:
+        # 경로에 따라 엔드포인트 분기
+        if '/extract-info' in path:
+            return extract_info_handler(body, headers)
+        elif '/download-caption' in path:
+            return download_caption_handler(body, headers)
+        elif '/preview-caption' in path:
+            return preview_handler(body, headers)
+        else:
+            return {
+                'statusCode': 404,
+                'headers': headers,
+                'body': json.dumps({'detail': 'Not found'})
+            }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Vercel 서버리스 함수용 핸들러
-from mangum import Mangum
-handler = Mangum(app)
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+        return {
+            'statusCode': 500,
+            'headers': headers,
+            'body': json.dumps({'detail': str(e)})
+        }
