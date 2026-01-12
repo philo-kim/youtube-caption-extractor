@@ -1,11 +1,11 @@
-from flask import Flask, request, jsonify, Response
+from http.server import BaseHTTPRequestHandler
 from youtube_transcript_api import YouTubeTranscriptApi
+import json
 import re
 import html
 import requests
 import io
-
-app = Flask(__name__)
+from urllib.parse import parse_qs, urlparse
 
 def get_video_id(url: str) -> str:
     match = re.search(r'(?:v=|\/|be\/|embed\/)([a-zA-Z0-9_-]{11})', str(url))
@@ -34,19 +34,47 @@ def format_time(seconds: float, is_vtt: bool = False) -> str:
     sep = "." if is_vtt else ","
     return f"{h:02d}:{m:02d}:{s:02d}{sep}{ms:03d}"
 
-def add_cors_headers(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
-    return response
+class handler(BaseHTTPRequestHandler):
+    def send_cors_headers(self):
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
 
-@app.route('/api/extract-info', methods=['POST', 'OPTIONS'])
-def extract_info():
-    if request.method == 'OPTIONS':
-        return add_cors_headers(jsonify({}))
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_cors_headers()
+        self.end_headers()
 
-    try:
-        body = request.get_json()
+    def do_POST(self):
+        path = urlparse(self.path).path
+
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = json.loads(self.rfile.read(content_length)) if content_length > 0 else {}
+
+        try:
+            if path == '/api/extract-info':
+                self.handle_extract_info(body)
+            elif path == '/api/download-caption':
+                self.handle_download_caption(body)
+            elif path == '/api/preview-caption':
+                self.handle_preview_caption(body)
+            else:
+                self.send_error_response(404, f"Not found: {path}")
+        except Exception as e:
+            self.send_error_response(500, str(e))
+
+    def send_json_response(self, data, status=200):
+        response = json.dumps(data).encode('utf-8')
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_cors_headers()
+        self.end_headers()
+        self.wfile.write(response)
+
+    def send_error_response(self, status, message):
+        self.send_json_response({"detail": message}, status)
+
+    def handle_extract_info(self, body):
         url = body.get('url', '')
         video_id = get_video_id(url)
         title = get_video_title(video_id)
@@ -62,19 +90,9 @@ def extract_info():
                 'kind': 'asr' if t.is_generated else ''
             })
 
-        return add_cors_headers(jsonify({"title": title, "available_captions": tracks}))
-    except Exception as e:
-        response = jsonify({"detail": str(e)})
-        response.status_code = 500
-        return add_cors_headers(response)
+        self.send_json_response({"title": title, "available_captions": tracks})
 
-@app.route('/api/download-caption', methods=['POST', 'OPTIONS'])
-def download_caption():
-    if request.method == 'OPTIONS':
-        return add_cors_headers(jsonify({}))
-
-    try:
-        body = request.get_json()
+    def handle_download_caption(self, body):
         url = body.get('url', '')
         language_code = body.get('language_code')
         format_type = body.get('format', 'srt')
@@ -111,21 +129,15 @@ def download_caption():
             content_type = 'text/plain'
             filename = "subtitle.txt"
 
-        response = Response(content, mimetype=content_type)
-        response.headers.add('Content-Disposition', f'attachment; filename="{filename}"')
-        return add_cors_headers(response)
-    except Exception as e:
-        response = jsonify({"detail": str(e)})
-        response.status_code = 500
-        return add_cors_headers(response)
+        response_bytes = content.encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+        self.send_cors_headers()
+        self.end_headers()
+        self.wfile.write(response_bytes)
 
-@app.route('/api/preview-caption', methods=['POST', 'OPTIONS'])
-def preview_caption():
-    if request.method == 'OPTIONS':
-        return add_cors_headers(jsonify({}))
-
-    try:
-        body = request.get_json()
+    def handle_preview_caption(self, body):
         url = body.get('url', '')
         language_code = body.get('language_code')
 
@@ -139,12 +151,8 @@ def preview_caption():
 
         preview_data = [{"time": format_time(item.start), "text": item.text} for item in data]
 
-        return add_cors_headers(jsonify({
+        self.send_json_response({
             "video_title": title,
             "language": transcript.language,
             "preview": preview_data
-        }))
-    except Exception as e:
-        response = jsonify({"detail": str(e)})
-        response.status_code = 500
-        return add_cors_headers(response)
+        })
