@@ -1,12 +1,17 @@
 from http.server import BaseHTTPRequestHandler
 from youtube_transcript_api import YouTubeTranscriptApi
-import yt_dlp
 import json
 import re
 import html
 import requests
 import io
 from urllib.parse import parse_qs, urlparse
+
+# Cobalt API 인스턴스 목록 (fallback용)
+COBALT_INSTANCES = [
+    "https://api.cobalt.tools",
+    "https://cobalt-api.hyper.lol",
+]
 
 def get_video_id(url: str) -> str:
     match = re.search(r'(?:v=|\/|be\/|embed\/)([a-zA-Z0-9_-]{11})', str(url))
@@ -23,6 +28,9 @@ def get_video_title(video_id: str) -> str:
     except:
         pass
     return f"YouTube_Video_{video_id}"
+
+def get_video_thumbnail(video_id: str) -> str:
+    return f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
 
 def format_time(seconds: float, is_vtt: bool = False) -> str:
     h = int(seconds // 3600)
@@ -44,11 +52,12 @@ class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_json_response({
             "status": "ok",
-            "message": "YouTube Caption Extractor API",
+            "message": "YouTube Caption & Video Downloader API",
             "endpoints": [
                 "POST /api/extract-info",
                 "POST /api/download-caption",
-                "POST /api/preview-caption"
+                "POST /api/preview-caption",
+                "POST /api/get-video-streams"
             ]
         })
 
@@ -92,6 +101,7 @@ class handler(BaseHTTPRequestHandler):
         url = body.get('url', '')
         video_id = get_video_id(url)
         title = get_video_title(video_id)
+        thumbnail = get_video_thumbnail(video_id)
 
         api = YouTubeTranscriptApi()
         transcript_list = api.list(video_id)
@@ -104,7 +114,12 @@ class handler(BaseHTTPRequestHandler):
                 'kind': 'asr' if t.is_generated else ''
             })
 
-        self.send_json_response({"title": title, "available_captions": tracks})
+        self.send_json_response({
+            "title": title,
+            "thumbnail": thumbnail,
+            "video_id": video_id,
+            "available_captions": tracks
+        })
 
     def handle_download_caption(self, body):
         url = body.get('url', '')
@@ -173,53 +188,72 @@ class handler(BaseHTTPRequestHandler):
 
     def handle_get_video_streams(self, body):
         url = body.get('url', '')
+        video_id = get_video_id(url)
+        quality = body.get('quality', '720')
 
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,
-        }
+        # Cobalt API로 다운로드 URL 가져오기
+        last_error = None
+        for instance in COBALT_INSTANCES:
+            try:
+                response = requests.post(
+                    instance,
+                    headers={
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json',
+                    },
+                    json={
+                        'url': url,
+                        'videoQuality': quality,
+                        'filenameStyle': 'basic',
+                    },
+                    timeout=30
+                )
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+                if response.status_code == 200:
+                    data = response.json()
+                    status = data.get('status')
 
-        title = info.get('title', '')
-        thumbnail = info.get('thumbnail', '')
-        duration = info.get('duration', 0)
+                    if status == 'redirect':
+                        # 직접 다운로드 URL
+                        self.send_json_response({
+                            "title": get_video_title(video_id),
+                            "thumbnail": get_video_thumbnail(video_id),
+                            "download_url": data.get('url'),
+                            "filename": data.get('filename', f'video_{video_id}.mp4')
+                        })
+                        return
 
-        streams = []
+                    elif status == 'picker':
+                        # 여러 옵션 제공
+                        picker = data.get('picker', [])
+                        streams = []
+                        for item in picker:
+                            streams.append({
+                                'type': item.get('type', 'video'),
+                                'url': item.get('url'),
+                                'thumb': item.get('thumb')
+                            })
+                        self.send_json_response({
+                            "title": get_video_title(video_id),
+                            "thumbnail": get_video_thumbnail(video_id),
+                            "streams": streams
+                        })
+                        return
 
-        for fmt in info.get('formats', []):
-            # 동영상+오디오 스트림
-            if fmt.get('vcodec') != 'none' and fmt.get('acodec') != 'none':
-                filesize = fmt.get('filesize') or fmt.get('filesize_approx')
-                streams.append({
-                    'format_id': fmt.get('format_id'),
-                    'type': 'video',
-                    'quality': fmt.get('resolution') or f"{fmt.get('height', '?')}p",
-                    'ext': fmt.get('ext'),
-                    'filesize': filesize,
-                    'filesize_mb': round(filesize / (1024 * 1024), 2) if filesize else None,
-                    'url': fmt.get('url')
-                })
+                    elif status == 'error':
+                        last_error = data.get('error', {}).get('code', 'Unknown error')
+                        continue
 
-        # 오디오 전용 스트림
-        for fmt in info.get('formats', []):
-            if fmt.get('vcodec') == 'none' and fmt.get('acodec') != 'none':
-                filesize = fmt.get('filesize') or fmt.get('filesize_approx')
-                streams.append({
-                    'format_id': fmt.get('format_id'),
-                    'type': 'audio',
-                    'quality': f"{fmt.get('abr', '?')}kbps",
-                    'ext': fmt.get('ext'),
-                    'filesize': filesize,
-                    'filesize_mb': round(filesize / (1024 * 1024), 2) if filesize else None,
-                    'url': fmt.get('url')
-                })
+                else:
+                    last_error = f"HTTP {response.status_code}"
+                    continue
 
-        self.send_json_response({
-            "title": title,
-            "thumbnail": thumbnail,
-            "duration": duration,
-            "streams": streams
-        })
+            except requests.exceptions.Timeout:
+                last_error = "Request timeout"
+                continue
+            except Exception as e:
+                last_error = str(e)
+                continue
+
+        # 모든 인스턴스 실패
+        self.send_error_response(503, f"동영상 다운로드 서비스 일시 불가: {last_error}")

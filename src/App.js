@@ -218,28 +218,30 @@ function App() {
               <img src={videoStreams.thumbnail} alt="thumbnail" className="thumbnail" />
               <div className="video-details">
                 <h3>{videoStreams.title}</h3>
-                <p>길이: {formatDuration(videoStreams.duration)}</p>
               </div>
             </div>
 
             <h4>동영상 다운로드</h4>
             <div className="streams-list">
-              {videoStreams.streams.filter(s => s.type === 'video').slice(0, 5).map((stream, index) => (
-                <div key={index} className="stream-item">
-                  <span className="stream-quality">🎬 {stream.quality}</span>
-                  <span className="stream-size">{stream.filesize_mb ? `${stream.filesize_mb} MB` : ''}</span>
+              {/* 단일 다운로드 URL (redirect 모드) */}
+              {videoStreams.download_url && (
+                <div className="stream-item">
+                  <span className="stream-quality">🎬 동영상</span>
+                  <span className="stream-size">{videoStreams.filename || ''}</span>
                   <button
-                    onClick={() => downloadVideo(stream.url)}
+                    onClick={() => downloadVideo(videoStreams.download_url)}
                     className="stream-download-btn"
                   >
                     다운로드
                   </button>
                 </div>
-              ))}
-              {videoStreams.streams.filter(s => s.type === 'audio').slice(0, 3).map((stream, index) => (
-                <div key={`audio-${index}`} className="stream-item">
-                  <span className="stream-quality">🎵 오디오 {stream.quality}</span>
-                  <span className="stream-size">{stream.filesize_mb ? `${stream.filesize_mb} MB` : ''}</span>
+              )}
+              {/* 다중 옵션 (picker 모드) */}
+              {videoStreams.streams && videoStreams.streams.map((stream, index) => (
+                <div key={index} className="stream-item">
+                  <span className="stream-quality">
+                    {stream.type === 'video' ? '🎬' : '🎵'} {stream.type === 'video' ? '동영상' : '오디오'}
+                  </span>
                   <button
                     onClick={() => downloadVideo(stream.url)}
                     className="stream-download-btn"
