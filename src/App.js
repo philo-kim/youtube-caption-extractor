@@ -9,6 +9,7 @@ function App() {
   const [selectedFormat, setSelectedFormat] = useState('srt');
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState('');
+  const [videoStreams, setVideoStreams] = useState(null);
 
   const API_BASE_URL = '/api';
 
@@ -144,6 +145,55 @@ function App() {
     }
   };
 
+  const getVideoStreams = async () => {
+    if (!url.trim()) {
+      setError('YouTube URL을 입력해주세요.');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/get-video-streams`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ url }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || '동영상 정보 추출 실패');
+      }
+
+      const data = await response.json();
+      setVideoStreams(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const downloadVideo = (streamUrl, quality, type) => {
+    const link = document.createElement('a');
+    link.href = streamUrl;
+    link.target = '_blank';
+    link.click();
+  };
+
+  const formatDuration = (seconds) => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    if (h > 0) {
+      return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    }
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
   const getLanguageDisplayName = (caption) => {
     const name = caption.name || caption.languageCode;
     const isAuto = caption.kind === 'asr';
@@ -153,7 +203,7 @@ function App() {
   return (
     <div className="app">
       <header className="header">
-        <h1>YouTube 자막 추출기</h1>
+        <h1>YouTube 자막 & 동영상 다운로더</h1>
       </header>
 
       <main className="main">
@@ -172,7 +222,14 @@ function App() {
               disabled={loading}
               className="extract-btn"
             >
-              {loading ? '추출 중...' : '추출'}
+              {loading ? '추출 중...' : '자막 추출'}
+            </button>
+            <button
+              onClick={getVideoStreams}
+              disabled={loading}
+              className="video-btn"
+            >
+              {loading ? '추출 중...' : '동영상 추출'}
             </button>
           </div>
         </div>
@@ -254,6 +311,47 @@ function App() {
                   ... 외 {preview.total_captions - 10}개 자막
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* 동영상 스트림 섹션 */}
+        {videoStreams && (
+          <div className="video-section">
+            <div className="video-info">
+              <img src={videoStreams.thumbnail} alt="thumbnail" className="thumbnail" />
+              <div className="video-details">
+                <h3>{videoStreams.title}</h3>
+                <p>길이: {formatDuration(videoStreams.duration)}</p>
+              </div>
+            </div>
+
+            <h4>다운로드 옵션</h4>
+            <div className="streams-list">
+              {videoStreams.streams.filter(s => s.type === 'video').map((stream, index) => (
+                <div key={index} className="stream-item">
+                  <span className="stream-quality">🎬 {stream.quality}</span>
+                  <span className="stream-size">{stream.filesize_mb ? `${stream.filesize_mb} MB` : '크기 불명'}</span>
+                  <button
+                    onClick={() => downloadVideo(stream.url, stream.quality, stream.type)}
+                    className="stream-download-btn"
+                  >
+                    다운로드
+                  </button>
+                </div>
+              ))}
+              {videoStreams.streams.filter(s => s.type === 'audio').map((stream, index) => (
+                <div key={`audio-${index}`} className="stream-item">
+                  <span className="stream-quality">🎵 오디오 {stream.quality}</span>
+                  <span className="stream-size">{stream.filesize_mb ? `${stream.filesize_mb} MB` : '크기 불명'}</span>
+                  <button
+                    onClick={() => downloadVideo(stream.url, stream.quality, stream.type)}
+                    className="stream-download-btn"
+                  >
+                    다운로드
+                  </button>
+                </div>
+              ))}
             </div>
           </div>
         )}

@@ -1,5 +1,6 @@
 from http.server import BaseHTTPRequestHandler
 from youtube_transcript_api import YouTubeTranscriptApi
+from pytube import YouTube
 import json
 import re
 import html
@@ -69,6 +70,8 @@ class handler(BaseHTTPRequestHandler):
                 self.handle_download_caption(body)
             elif path == '/api/preview-caption':
                 self.handle_preview_caption(body)
+            elif path == '/api/get-video-streams':
+                self.handle_get_video_streams(body)
             else:
                 self.send_error_response(404, f"Not found: {path}")
         except Exception as e:
@@ -166,4 +169,43 @@ class handler(BaseHTTPRequestHandler):
             "video_title": title,
             "language": transcript.language,
             "preview": preview_data
+        })
+
+    def handle_get_video_streams(self, body):
+        url = body.get('url', '')
+
+        yt = YouTube(url)
+        title = yt.title
+
+        streams = []
+
+        # 동영상+오디오 스트림 (progressive)
+        for stream in yt.streams.filter(progressive=True).order_by('resolution').desc():
+            streams.append({
+                'itag': stream.itag,
+                'type': 'video',
+                'quality': stream.resolution,
+                'mime_type': stream.mime_type,
+                'filesize': stream.filesize,
+                'filesize_mb': round(stream.filesize / (1024 * 1024), 2) if stream.filesize else None,
+                'url': stream.url
+            })
+
+        # 오디오 전용 스트림
+        for stream in yt.streams.filter(only_audio=True).order_by('abr').desc():
+            streams.append({
+                'itag': stream.itag,
+                'type': 'audio',
+                'quality': stream.abr,
+                'mime_type': stream.mime_type,
+                'filesize': stream.filesize,
+                'filesize_mb': round(stream.filesize / (1024 * 1024), 2) if stream.filesize else None,
+                'url': stream.url
+            })
+
+        self.send_json_response({
+            "title": title,
+            "thumbnail": yt.thumbnail_url,
+            "duration": yt.length,
+            "streams": streams
         })
