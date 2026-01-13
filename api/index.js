@@ -1,4 +1,4 @@
-import { Innertube } from 'youtubei.js';
+const { Innertube } = require('youtubei.js');
 
 let innertube = null;
 
@@ -24,15 +24,7 @@ function formatTime(seconds, isVtt = false) {
   return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}${sep}${ms.toString().padStart(3, '0')}`;
 }
 
-function corsHeaders() {
-  return {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-  };
-}
-
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   // CORS preflight
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -42,9 +34,9 @@ export default async function handler(req, res) {
   }
 
   // Set CORS headers
-  Object.entries(corsHeaders()).forEach(([key, value]) => {
-    res.setHeader(key, value);
-  });
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   const path = req.url.split('?')[0];
 
@@ -83,7 +75,7 @@ export default async function handler(req, res) {
     console.error('API Error:', error);
     return res.status(500).json({ detail: error.message });
   }
-}
+};
 
 async function handleExtractInfo(body, res) {
   const { url } = body;
