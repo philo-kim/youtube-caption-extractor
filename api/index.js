@@ -185,43 +185,40 @@ async function handleGetVideoStreams(body, res) {
   if (!url) return res.status(400).json({ detail: 'URL is required' });
 
   const videoId = getVideoId(url);
-  const yt = await getInnertube();
-  const info = await yt.getInfo(videoId);
 
-  const title = info.basic_info?.title || 'Unknown';
-  const thumbnail = info.basic_info?.thumbnail?.[0]?.url || `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
+  // Use @distube/ytdl-core for video streams (better URL deciphering)
+  const ytdl = require('@distube/ytdl-core');
+  const info = await ytdl.getInfo(videoId);
+
+  const title = info.videoDetails?.title || 'Unknown';
+  const thumbnail = info.videoDetails?.thumbnails?.pop()?.url || `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
 
   const streams = [];
 
-  // Progressive formats (video + audio) - use chooseFormat or streaming_data
-  const formatOptions = info.streaming_data?.formats || [];
-  for (const format of formatOptions) {
-    const streamUrl = format.decipher ? format.decipher(yt.session.player) : format.url;
-    if (streamUrl) {
+  // Progressive formats (video + audio)
+  const formats = info.formats || [];
+  for (const format of formats) {
+    if (format.url && format.hasVideo && format.hasAudio) {
       streams.push({
         type: 'video',
-        quality: format.quality_label || format.quality || 'unknown',
-        url: streamUrl,
-        mimeType: format.mime_type,
-        size: format.content_length ? `${(format.content_length / (1024 * 1024)).toFixed(1)} MB` : null
+        quality: format.qualityLabel || format.quality || 'unknown',
+        url: format.url,
+        mimeType: format.mimeType,
+        size: format.contentLength ? `${(parseInt(format.contentLength) / (1024 * 1024)).toFixed(1)} MB` : null
       });
     }
   }
 
-  // Audio only from adaptive formats
-  const adaptiveFormats = info.streaming_data?.adaptive_formats || [];
-  for (const format of adaptiveFormats) {
-    if (format.mime_type?.includes('audio')) {
-      const streamUrl = format.decipher ? format.decipher(yt.session.player) : format.url;
-      if (streamUrl) {
-        streams.push({
-          type: 'audio',
-          quality: format.audio_quality || (format.bitrate ? `${Math.round(format.bitrate / 1000)}kbps` : 'unknown'),
-          url: streamUrl,
-          mimeType: format.mime_type,
-          size: format.content_length ? `${(format.content_length / (1024 * 1024)).toFixed(1)} MB` : null
-        });
-      }
+  // Audio only
+  for (const format of formats) {
+    if (format.url && format.hasAudio && !format.hasVideo) {
+      streams.push({
+        type: 'audio',
+        quality: format.audioBitrate ? `${format.audioBitrate}kbps` : 'unknown',
+        url: format.url,
+        mimeType: format.mimeType,
+        size: format.contentLength ? `${(parseInt(format.contentLength) / (1024 * 1024)).toFixed(1)} MB` : null
+      });
     }
   }
 
