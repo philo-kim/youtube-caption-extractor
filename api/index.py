@@ -182,25 +182,14 @@ class handler(BaseHTTPRequestHandler):
 
     def handle_get_video_streams(self, body):
         url = body.get('url', '')
-        po_token = body.get('po_token')
-        visitor_data = body.get('visitor_data')
 
         video_id = get_video_id(url)
 
-        # po_token_verifier 콜백 생성
-        def po_token_verifier():
-            return (visitor_data, po_token)
-
-        # pytubefix로 동영상 정보 가져오기
-        if po_token and visitor_data:
-            yt = YouTube(
-                f"https://www.youtube.com/watch?v={video_id}",
-                use_po_token=True,
-                po_token_verifier=po_token_verifier
-            )
-        else:
-            # PO Token이 없으면 기본 방식 시도
-            yt = YouTube(f"https://www.youtube.com/watch?v={video_id}")
+        # pytubefix로 동영상 정보 가져오기 (WEB 클라이언트 사용)
+        yt = YouTube(
+            f"https://www.youtube.com/watch?v={video_id}",
+            client='WEB'
+        )
 
         title = yt.title
         thumbnail = yt.thumbnail_url
