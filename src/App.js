@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import './App.css';
+import { getVideoStreams, downloadStream } from './youtubeDownloader';
 
 function App() {
   const [url, setUrl] = useState('');
@@ -27,23 +28,21 @@ function App() {
     setPreview(null);
 
     try {
-      // 자막 정보와 동영상 스트림을 병렬로 가져오기
-      const [captionResponse, streamResponse] = await Promise.all([
+      // 자막 정보 (서버) + 동영상 스트림 (브라우저)를 병렬로 가져오기
+      const [captionResult, streamResult] = await Promise.allSettled([
+        // 자막 정보는 서버 API 사용
         fetch(`${API_BASE_URL}/extract-info`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url }),
-        }),
-        fetch(`${API_BASE_URL}/get-video-streams`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url }),
-        }),
+        }).then(res => res.ok ? res.json() : Promise.reject(res)),
+        // 동영상 스트림은 브라우저에서 직접 처리 (PO Token 자동 생성)
+        getVideoStreams(url),
       ]);
 
       // 자막 정보 처리
-      if (captionResponse.ok) {
-        const captionData = await captionResponse.json();
+      if (captionResult.status === 'fulfilled') {
+        const captionData = captionResult.value;
         setVideoInfo(captionData);
         if (captionData.available_captions?.length > 0) {
           setSelectedLanguage(captionData.available_captions[0].languageCode);
@@ -51,16 +50,14 @@ function App() {
       }
 
       // 동영상 스트림 처리
-      if (streamResponse.ok) {
-        const streamData = await streamResponse.json();
-        setVideoStreams(streamData);
+      if (streamResult.status === 'fulfilled') {
+        setVideoStreams(streamResult.value);
       } else {
-        const errorData = await streamResponse.json();
-        console.error('동영상 스트림 오류:', errorData.detail);
+        console.error('동영상 스트림 오류:', streamResult.reason);
       }
 
       // 둘 다 실패한 경우에만 에러 표시
-      if (!captionResponse.ok && !streamResponse.ok) {
+      if (captionResult.status === 'rejected' && streamResult.status === 'rejected') {
         throw new Error('정보 추출에 실패했습니다.');
       }
 
@@ -156,7 +153,7 @@ function App() {
   };
 
   const downloadVideo = (streamUrl) => {
-    window.open(streamUrl, '_blank');
+    downloadStream(streamUrl);
   };
 
   const formatDuration = (seconds) => {

@@ -1,6 +1,5 @@
 from http.server import BaseHTTPRequestHandler
 from youtube_transcript_api import YouTubeTranscriptApi
-from pytubefix import YouTube
 import json
 import re
 import html
@@ -47,12 +46,11 @@ class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_json_response({
             "status": "ok",
-            "message": "YouTube Caption & Video Downloader API",
+            "message": "YouTube Caption Downloader API",
             "endpoints": [
                 "POST /api/extract-info",
                 "POST /api/download-caption",
-                "POST /api/preview-caption",
-                "POST /api/get-video-streams"
+                "POST /api/preview-caption"
             ]
         })
 
@@ -74,8 +72,6 @@ class handler(BaseHTTPRequestHandler):
                 self.handle_download_caption(body)
             elif path == '/api/preview-caption':
                 self.handle_preview_caption(body)
-            elif path == '/api/get-video-streams':
-                self.handle_get_video_streams(body)
             else:
                 self.send_error_response(404, f"Not found: {path}")
         except Exception as e:
@@ -180,46 +176,3 @@ class handler(BaseHTTPRequestHandler):
             "language": transcript.language,
             "preview": preview_data
         })
-
-    def handle_get_video_streams(self, body):
-        url = body.get('url', '')
-        video_id = get_video_id(url)
-
-        try:
-            # pytubefix로 다운로드 URL 가져오기
-            yt = YouTube(url)
-            streams = []
-
-            # Progressive 스트림 (영상+오디오 합쳐진 것)
-            for stream in yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc():
-                filesize = stream.filesize if hasattr(stream, 'filesize') else None
-                size_mb = f"{filesize / (1024*1024):.1f} MB" if filesize else None
-                streams.append({
-                    'type': 'video',
-                    'quality': stream.resolution,
-                    'url': stream.url,
-                    'size': size_mb
-                })
-
-            # 오디오 전용 스트림
-            for stream in yt.streams.filter(only_audio=True).order_by('abr').desc()[:2]:
-                filesize = stream.filesize if hasattr(stream, 'filesize') else None
-                size_mb = f"{filesize / (1024*1024):.1f} MB" if filesize else None
-                streams.append({
-                    'type': 'audio',
-                    'quality': stream.abr,
-                    'url': stream.url,
-                    'size': size_mb
-                })
-
-            if streams:
-                self.send_json_response({
-                    "title": yt.title,
-                    "thumbnail": yt.thumbnail_url,
-                    "streams": streams
-                })
-            else:
-                self.send_error_response(404, "다운로드 가능한 스트림을 찾을 수 없습니다.")
-
-        except Exception as e:
-            self.send_error_response(500, f"동영상 정보 추출 실패: {str(e)}")
