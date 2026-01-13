@@ -1,17 +1,12 @@
 from http.server import BaseHTTPRequestHandler
 from youtube_transcript_api import YouTubeTranscriptApi
+from y2mate_api import Handler as Y2MateHandler
 import json
 import re
 import html
 import requests
 import io
 from urllib.parse import parse_qs, urlparse
-
-# Cobalt API 인스턴스 목록 (fallback용)
-COBALT_INSTANCES = [
-    "https://api.cobalt.tools",
-    "https://cobalt-api.hyper.lol",
-]
 
 def get_video_id(url: str) -> str:
     match = re.search(r'(?:v=|\/|be\/|embed\/)([a-zA-Z0-9_-]{11})', str(url))
@@ -189,71 +184,38 @@ class handler(BaseHTTPRequestHandler):
     def handle_get_video_streams(self, body):
         url = body.get('url', '')
         video_id = get_video_id(url)
-        quality = body.get('quality', '720')
 
-        # Cobalt API로 다운로드 URL 가져오기
-        last_error = None
-        for instance in COBALT_INSTANCES:
-            try:
-                response = requests.post(
-                    instance,
-                    headers={
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/json',
-                    },
-                    json={
-                        'url': url,
-                        'videoQuality': quality,
-                        'filenameStyle': 'basic',
-                    },
-                    timeout=30
-                )
+        try:
+            # y2mate-api로 다운로드 URL 가져오기
+            handler = Y2MateHandler(url)
+            streams = []
 
-                if response.status_code == 200:
-                    data = response.json()
-                    status = data.get('status')
+            # MP4 스트림 가져오기
+            for video in handler.run(format="mp4"):
+                streams.append({
+                    'type': 'video',
+                    'quality': video.quality,
+                    'url': video.url,
+                    'size': getattr(video, 'size', None)
+                })
 
-                    if status == 'redirect':
-                        # 직접 다운로드 URL
-                        self.send_json_response({
-                            "title": get_video_title(video_id),
-                            "thumbnail": get_video_thumbnail(video_id),
-                            "download_url": data.get('url'),
-                            "filename": data.get('filename', f'video_{video_id}.mp4')
-                        })
-                        return
+            # MP3 스트림 가져오기
+            for audio in handler.run(format="mp3"):
+                streams.append({
+                    'type': 'audio',
+                    'quality': audio.quality,
+                    'url': audio.url,
+                    'size': getattr(audio, 'size', None)
+                })
 
-                    elif status == 'picker':
-                        # 여러 옵션 제공
-                        picker = data.get('picker', [])
-                        streams = []
-                        for item in picker:
-                            streams.append({
-                                'type': item.get('type', 'video'),
-                                'url': item.get('url'),
-                                'thumb': item.get('thumb')
-                            })
-                        self.send_json_response({
-                            "title": get_video_title(video_id),
-                            "thumbnail": get_video_thumbnail(video_id),
-                            "streams": streams
-                        })
-                        return
+            if streams:
+                self.send_json_response({
+                    "title": get_video_title(video_id),
+                    "thumbnail": get_video_thumbnail(video_id),
+                    "streams": streams
+                })
+            else:
+                self.send_error_response(404, "다운로드 가능한 스트림을 찾을 수 없습니다.")
 
-                    elif status == 'error':
-                        last_error = data.get('error', {}).get('code', 'Unknown error')
-                        continue
-
-                else:
-                    last_error = f"HTTP {response.status_code}"
-                    continue
-
-            except requests.exceptions.Timeout:
-                last_error = "Request timeout"
-                continue
-            except Exception as e:
-                last_error = str(e)
-                continue
-
-        # 모든 인스턴스 실패
-        self.send_error_response(503, f"동영상 다운로드 서비스 일시 불가: {last_error}")
+        except Exception as e:
+            self.send_error_response(500, f"동영상 정보 추출 실패: {str(e)}")

@@ -236,12 +236,13 @@ function App() {
                   </button>
                 </div>
               )}
-              {/* 다중 옵션 (picker 모드) */}
+              {/* 스트림 목록 */}
               {videoStreams.streams && videoStreams.streams.map((stream, index) => (
                 <div key={index} className="stream-item">
                   <span className="stream-quality">
-                    {stream.type === 'video' ? '🎬' : '🎵'} {stream.type === 'video' ? '동영상' : '오디오'}
+                    {stream.type === 'video' ? '🎬' : '🎵'} {stream.quality || (stream.type === 'video' ? '동영상' : '오디오')}
                   </span>
+                  <span className="stream-size">{stream.size || ''}</span>
                   <button
                     onClick={() => downloadVideo(stream.url)}
                     className="stream-download-btn"
