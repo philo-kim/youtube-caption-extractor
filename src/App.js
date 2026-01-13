@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import './App.css';
-import { getVideoStreams, downloadStream } from './youtubeDownloader';
+import { generatePoToken, downloadStream } from './youtubeDownloader';
 
 function App() {
   const [url, setUrl] = useState('');
@@ -28,16 +28,32 @@ function App() {
     setPreview(null);
 
     try {
-      // 자막 정보 (서버) + 동영상 스트림 (브라우저)를 병렬로 가져오기
+      // 1. 브라우저에서 PO Token 생성
+      let poToken = null;
+      let visitorData = null;
+      try {
+        const tokenResult = await generatePoToken();
+        poToken = tokenResult.poToken;
+        visitorData = tokenResult.visitorData;
+        console.log('PO Token 생성 완료');
+      } catch (tokenError) {
+        console.warn('PO Token 생성 실패, 기본 방식으로 시도:', tokenError);
+      }
+
+      // 2. 자막 정보 + 동영상 스트림을 병렬로 가져오기 (둘 다 서버 API 사용)
       const [captionResult, streamResult] = await Promise.allSettled([
-        // 자막 정보는 서버 API 사용
+        // 자막 정보
         fetch(`${API_BASE_URL}/extract-info`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url }),
         }).then(res => res.ok ? res.json() : Promise.reject(res)),
-        // 동영상 스트림은 브라우저에서 직접 처리 (PO Token 자동 생성)
-        getVideoStreams(url),
+        // 동영상 스트림 (PO Token 포함)
+        fetch(`${API_BASE_URL}/get-video-streams`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, po_token: poToken, visitor_data: visitorData }),
+        }).then(res => res.ok ? res.json() : res.json().then(err => Promise.reject(new Error(err.detail || '동영상 정보 추출 실패')))),
       ]);
 
       // 자막 정보 처리

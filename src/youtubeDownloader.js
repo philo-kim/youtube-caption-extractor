@@ -1,75 +1,152 @@
-import { Innertube } from 'youtubei.js';
-import { BG, buildURL, GOOG_API_KEY } from 'bgutils-js';
+import { BG } from 'bgutils-js';
 
-// Visitor Data와 PO Token을 저장하는 캐시
-let cachedSession = null;
+const GOOG_API_KEY = 'AIzaSyDyT5W0Jh49F30Pqqtyfdf7pDLFKLJoAnw';
+const REQUEST_KEY = 'O43z0dpjhgX20SCx4KAo';
 
 /**
- * PO Token과 Visitor Data를 생성합니다.
+ * WAA API를 통해 PO Token과 Visitor Data를 생성합니다.
+ * WAA API는 CORS를 허용하므로 브라우저에서 직접 호출 가능합니다.
  */
-async function generatePoToken() {
+export async function generatePoToken() {
   try {
-    // InnerTube 인스턴스 생성
-    const innertube = await Innertube.create({ retrieve_player: false });
+    // 1. WAA Create API로 Challenge 가져오기
+    const createResponse = await fetch(
+      'https://jnn-pa.googleapis.com/$rpc/google.internal.waa.v1.Waa/Create',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json+protobuf',
+          'x-goog-api-key': GOOG_API_KEY,
+          'x-user-agent': 'grpc-web-javascript/0.1',
+        },
+        body: JSON.stringify([REQUEST_KEY]),
+      }
+    );
 
-    // Challenge 데이터 가져오기
-    const requestKey = 'O43z0dpjhgX20SCx4KAo';
-    const challengeResponse = await innertube.session.player?.getPoToken(requestKey);
-
-    if (!challengeResponse) {
-      // Challenge가 없으면 기본 방식으로 시도
-      const visitorData = innertube.session.context.client.visitorData;
-      return { visitorData, poToken: null };
+    if (!createResponse.ok) {
+      throw new Error(`WAA Create API 오류: ${createResponse.status}`);
     }
 
-    const { program, globalName, bgChallenge } = challengeResponse;
+    const createData = await createResponse.json();
 
-    // BotGuard VM 초기화
-    if (program) {
-      const interpreterUrl = buildURL(program, true);
-      const vmResponse = await fetch(interpreterUrl);
-      const vmScript = await vmResponse.text();
-      new Function(vmScript)();
+    // Challenge 데이터 파싱
+    // 응답 형식: [program, globalName, challenge, ...]
+    const [program, globalName, challenge] = createData;
+
+    if (!program || !challenge) {
+      throw new Error('Challenge 데이터가 없습니다.');
     }
 
+    // 2. BotGuard VM 로드 및 실행
+    const interpreterUrl = `https://www.google.com/js/bg/${program}.js`;
+    const vmResponse = await fetch(interpreterUrl);
+    const vmScript = await vmResponse.text();
+
+    // VM 스크립트 실행
+    // eslint-disable-next-line no-new-func
+    new Function(vmScript)();
+
+    // 3. BotGuard 인스턴스 생성 및 Challenge 실행
     const bgInstance = new BG(globalName);
+    const botguardResult = await bgInstance.invoke(challenge);
 
-    // BotGuard 실행
-    const poTokenResult = await bgInstance.invoke(bgChallenge);
+    if (!botguardResult || !botguardResult.botguardResponse) {
+      throw new Error('BotGuard 실행 실패');
+    }
 
-    // Integrity Token 가져오기
-    const integrityTokenResponse = await fetch(
+    // 4. Integrity Token 생성
+    const integrityResponse = await fetch(
       'https://jnn-pa.googleapis.com/$rpc/google.internal.waa.v1.Waa/GenerateIT',
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json+protobuf',
           'x-goog-api-key': GOOG_API_KEY,
+          'x-user-agent': 'grpc-web-javascript/0.1',
         },
-        body: JSON.stringify([requestKey, poTokenResult.botguardResponse]),
+        body: JSON.stringify([REQUEST_KEY, botguardResult.botguardResponse]),
       }
     );
 
-    const integrityTokenData = await integrityTokenResponse.json();
-    const integrityToken = integrityTokenData[0];
+    if (!integrityResponse.ok) {
+      throw new Error(`Integrity Token 생성 오류: ${integrityResponse.status}`);
+    }
 
-    // PO Token 민팅
-    const getMinter = poTokenResult.webPoSignalOutput[0];
+    const integrityData = await integrityResponse.json();
+    const integrityToken = integrityData[0];
+
+    if (!integrityToken) {
+      throw new Error('Integrity Token이 없습니다.');
+    }
+
+    // 5. Visitor Data 생성 (랜덤 생성)
+    const visitorData = generateVisitorData();
+
+    // 6. PO Token 민팅
+    if (!botguardResult.webPoSignalOutput || !botguardResult.webPoSignalOutput[0]) {
+      throw new Error('WebPoMinter를 찾을 수 없습니다.');
+    }
+
+    const getMinter = botguardResult.webPoSignalOutput[0];
     const mintCallback = await getMinter(base64ToU8(integrityToken));
-    const visitorData = innertube.session.context.client.visitorData;
-    const result = await mintCallback(new TextEncoder().encode(visitorData));
-    const poToken = u8ToBase64(result, true);
+    const mintResult = await mintCallback(new TextEncoder().encode(visitorData));
+    const poToken = u8ToBase64(mintResult, true);
+
+    console.log('PO Token 생성 성공:', { visitorData: visitorData.substring(0, 20) + '...', poToken: poToken.substring(0, 20) + '...' });
 
     return { visitorData, poToken };
   } catch (error) {
     console.error('PO Token 생성 실패:', error);
-    return { visitorData: null, poToken: null };
+    throw error;
   }
 }
 
-// Base64 변환 유틸리티
+/**
+ * Visitor Data 생성 (YouTube 형식과 유사하게)
+ */
+function generateVisitorData() {
+  // Visitor Data는 Base64 인코딩된 프로토버프 형식
+  // 간단한 랜덤 ID 생성
+  const randomBytes = new Uint8Array(16);
+  crypto.getRandomValues(randomBytes);
+
+  // YouTube 스타일 Visitor ID 생성
+  const visitorId = u8ToBase64(randomBytes, true);
+
+  // 프로토버프 형식으로 인코딩 (simplified)
+  // 실제로는 더 복잡한 구조이지만, 기본적인 형식 사용
+  const timestamp = Math.floor(Date.now() / 1000);
+  const data = new Uint8Array([
+    0x0a, 0x10, // field 1, length 16
+    ...randomBytes,
+    0x10, // field 2, varint
+    ...encodeVarint(timestamp),
+  ]);
+
+  return u8ToBase64(data, false);
+}
+
+/**
+ * Varint 인코딩
+ */
+function encodeVarint(value) {
+  const result = [];
+  while (value > 127) {
+    result.push((value & 0x7f) | 0x80);
+    value >>>= 7;
+  }
+  result.push(value);
+  return result;
+}
+
+/**
+ * Base64를 Uint8Array로 변환
+ */
 function base64ToU8(base64) {
-  const binaryString = atob(base64);
+  // URL-safe base64 처리
+  const normalized = base64.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4);
+  const binaryString = atob(padded);
   const bytes = new Uint8Array(binaryString.length);
   for (let i = 0; i < binaryString.length; i++) {
     bytes[i] = binaryString.charCodeAt(i);
@@ -77,6 +154,9 @@ function base64ToU8(base64) {
   return bytes;
 }
 
+/**
+ * Uint8Array를 Base64로 변환
+ */
 function u8ToBase64(u8, urlSafe = false) {
   let binary = '';
   for (let i = 0; i < u8.length; i++) {
@@ -90,76 +170,7 @@ function u8ToBase64(u8, urlSafe = false) {
 }
 
 /**
- * 비디오 스트림 정보를 가져옵니다.
- * @param {string} videoUrl - YouTube 비디오 URL
- * @returns {Promise<Object>} - 비디오 정보와 스트림 목록
- */
-export async function getVideoStreams(videoUrl) {
-  try {
-    // InnerTube 인스턴스 생성 (브라우저 환경에서 자동으로 PO Token 처리)
-    const innertube = await Innertube.create({
-      fetch: async (input, init) => {
-        // 기본 fetch 사용
-        return fetch(input, init);
-      }
-    });
-
-    // Video ID 추출
-    const videoIdMatch = videoUrl.match(/(?:v=|\/|be\/|embed\/)([a-zA-Z0-9_-]{11})/);
-    if (!videoIdMatch) {
-      throw new Error('유효한 YouTube URL이 아닙니다.');
-    }
-    const videoId = videoIdMatch[1];
-
-    // 비디오 정보 가져오기
-    const info = await innertube.getInfo(videoId);
-
-    // 스트림 목록 구성
-    const streams = [];
-
-    // Progressive 스트림 (영상+오디오)
-    const formats = info.streaming_data?.formats || [];
-    for (const format of formats) {
-      if (format.url) {
-        streams.push({
-          type: 'video',
-          quality: format.quality_label || format.quality || 'unknown',
-          url: format.url,
-          mimeType: format.mime_type,
-          size: format.content_length ? `${(format.content_length / (1024 * 1024)).toFixed(1)} MB` : null,
-        });
-      }
-    }
-
-    // Adaptive 스트림에서 오디오만 추출
-    const adaptiveFormats = info.streaming_data?.adaptive_formats || [];
-    for (const format of adaptiveFormats) {
-      if (format.url && format.mime_type?.includes('audio')) {
-        streams.push({
-          type: 'audio',
-          quality: format.audio_quality || format.bitrate ? `${Math.round(format.bitrate / 1000)}kbps` : 'unknown',
-          url: format.url,
-          mimeType: format.mime_type,
-          size: format.content_length ? `${(format.content_length / (1024 * 1024)).toFixed(1)} MB` : null,
-        });
-      }
-    }
-
-    return {
-      title: info.basic_info?.title || 'Unknown',
-      thumbnail: info.basic_info?.thumbnail?.[0]?.url || `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
-      duration: info.basic_info?.duration,
-      streams: streams,
-    };
-  } catch (error) {
-    console.error('비디오 스트림 가져오기 실패:', error);
-    throw error;
-  }
-}
-
-/**
  * 비디오 다운로드를 시작합니다.
- * @param {string} streamUrl - 스트림 URL
  */
 export function downloadStream(streamUrl) {
   window.open(streamUrl, '_blank');
