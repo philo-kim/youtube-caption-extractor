@@ -193,31 +193,35 @@ async function handleGetVideoStreams(body, res) {
 
   const streams = [];
 
-  // Progressive formats (video + audio)
-  const formats = info.streaming_data?.formats || [];
-  for (const format of formats) {
-    if (format.url) {
+  // Progressive formats (video + audio) - use chooseFormat or streaming_data
+  const formatOptions = info.streaming_data?.formats || [];
+  for (const format of formatOptions) {
+    const streamUrl = format.decipher ? format.decipher(yt.session.player) : format.url;
+    if (streamUrl) {
       streams.push({
         type: 'video',
         quality: format.quality_label || format.quality || 'unknown',
-        url: format.url,
+        url: streamUrl,
         mimeType: format.mime_type,
         size: format.content_length ? `${(format.content_length / (1024 * 1024)).toFixed(1)} MB` : null
       });
     }
   }
 
-  // Audio only
+  // Audio only from adaptive formats
   const adaptiveFormats = info.streaming_data?.adaptive_formats || [];
   for (const format of adaptiveFormats) {
-    if (format.url && format.mime_type?.includes('audio')) {
-      streams.push({
-        type: 'audio',
-        quality: format.audio_quality || (format.bitrate ? `${Math.round(format.bitrate / 1000)}kbps` : 'unknown'),
-        url: format.url,
-        mimeType: format.mime_type,
-        size: format.content_length ? `${(format.content_length / (1024 * 1024)).toFixed(1)} MB` : null
-      });
+    if (format.mime_type?.includes('audio')) {
+      const streamUrl = format.decipher ? format.decipher(yt.session.player) : format.url;
+      if (streamUrl) {
+        streams.push({
+          type: 'audio',
+          quality: format.audio_quality || (format.bitrate ? `${Math.round(format.bitrate / 1000)}kbps` : 'unknown'),
+          url: streamUrl,
+          mimeType: format.mime_type,
+          size: format.content_length ? `${(format.content_length / (1024 * 1024)).toFixed(1)} MB` : null
+        });
+      }
     }
   }
 
