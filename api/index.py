@@ -185,10 +185,11 @@ class handler(BaseHTTPRequestHandler):
 
         video_id = get_video_id(url)
 
-        # pytubefix로 동영상 정보 가져오기 (WEB 클라이언트 사용)
+        # pytubefix로 동영상 정보 가져오기 (WEB 클라이언트 + PO Token 자동 생성)
         yt = YouTube(
             f"https://www.youtube.com/watch?v={video_id}",
-            client='WEB'
+            'WEB',
+            use_po_token=True
         )
 
         title = yt.title
