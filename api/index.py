@@ -1,6 +1,6 @@
 from http.server import BaseHTTPRequestHandler
 from youtube_transcript_api import YouTubeTranscriptApi
-from y2mate_api import Handler as Y2MateHandler
+from pytubefix import YouTube
 import json
 import re
 import html
@@ -186,32 +186,36 @@ class handler(BaseHTTPRequestHandler):
         video_id = get_video_id(url)
 
         try:
-            # y2mate-api로 다운로드 URL 가져오기
-            handler = Y2MateHandler(url)
+            # pytubefix로 다운로드 URL 가져오기
+            yt = YouTube(url)
             streams = []
 
-            # MP4 스트림 가져오기
-            for video in handler.run(format="mp4"):
+            # Progressive 스트림 (영상+오디오 합쳐진 것)
+            for stream in yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc():
+                filesize = stream.filesize if hasattr(stream, 'filesize') else None
+                size_mb = f"{filesize / (1024*1024):.1f} MB" if filesize else None
                 streams.append({
                     'type': 'video',
-                    'quality': video.quality,
-                    'url': video.url,
-                    'size': getattr(video, 'size', None)
+                    'quality': stream.resolution,
+                    'url': stream.url,
+                    'size': size_mb
                 })
 
-            # MP3 스트림 가져오기
-            for audio in handler.run(format="mp3"):
+            # 오디오 전용 스트림
+            for stream in yt.streams.filter(only_audio=True).order_by('abr').desc()[:2]:
+                filesize = stream.filesize if hasattr(stream, 'filesize') else None
+                size_mb = f"{filesize / (1024*1024):.1f} MB" if filesize else None
                 streams.append({
                     'type': 'audio',
-                    'quality': audio.quality,
-                    'url': audio.url,
-                    'size': getattr(audio, 'size', None)
+                    'quality': stream.abr,
+                    'url': stream.url,
+                    'size': size_mb
                 })
 
             if streams:
                 self.send_json_response({
-                    "title": get_video_title(video_id),
-                    "thumbnail": get_video_thumbnail(video_id),
+                    "title": yt.title,
+                    "thumbnail": yt.thumbnail_url,
                     "streams": streams
                 })
             else:
